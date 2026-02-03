@@ -3,11 +3,11 @@ ap.ps1 - OOBE bootstrapper for Get-WindowsAutoPilotInfo
 
 Features:
 - Non-interactive NuGet + PSGallery trust (no Y prompts)
-- Pin modern-auth version (default 3.6: MSGraph -> MgGraph) [1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+- Pin modern-auth version (default 3.6: MSGraph -> MgGraph) [2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 - Patch to avoid "Assigned User" PropertyNotFoundStrict crash
 - Show progress/wait/sync output on screen
 - Hide GroupTag lines on screen (without breaking progress)
-- Optionally add -Assign back (wait for profile assignment) [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+- Add -Assign back (wait for Autopilot profile assignment) [3](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 
 Logs:
 - C:\Windows\Temp\ap-bootstrap.log
@@ -17,9 +17,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------- CONFIG ----------------
-$PinnedVersion = '3.6'                 # Modern auth pivot (MSGraph -> MgGraph) per release notes history [1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+$PinnedVersion = '3.6'                 # Modern auth pivot (MSGraph -> MgGraph) per release notes history [2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 $GroupTag      = 'AutoPilot-NonAdmin'  # Must be applied but not shown on-screen
-$UseAssign     = $false                 # Add -Assign back (wait for profile assignment completion) [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+$UseAssign     = $true                 # Add -Assign back (wait for profile assignment completion) [3](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 
 # What to suppress from on-screen output
 $SuppressPatterns = @(
@@ -54,8 +54,13 @@ try {
 
     Say "Uploading HWHash... (import/sync/wait status will appear below)"
 
+    # Additional user guidance when -Assign is enabled
+    if ($UseAssign) {
+        Say "Deployment Profile assignment may take up to 30 minutes — please be patient."
+    }
+
     # Best-effort: suppress Graph welcome banner where applicable (depends on Graph module & script)
-    # Graph SDK uses Connect-MgGraph for auth flows. [3](https://www.powershellgallery.com/packages/Get-WindowsAutoPilotInfo/3.5/Content/Get-WindowsAutoPilotInfo.ps1)
+    # Graph SDK uses Connect-MgGraph for auth flows. [4](https://www.powershellgallery.com/packages/Get-WindowsAutoPilotInfo/3.5/Content/Get-WindowsAutoPilotInfo.ps1)
     $env:MG_NO_WELCOME = '1'
 
     # TLS 1.2 helps on older images
@@ -176,7 +181,7 @@ try {
 
     # Build invocation (in-process, so progress appears on screen)
     $invokeArgs = @('-Online', '-GroupTag', $GroupTag)
-    if ($UseAssign) { $invokeArgs += '-Assign' }  # wait for assignment [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+    if ($UseAssign) { $invokeArgs += '-Assign' }  # wait for assignment [3](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 
     Log "Executing patched script in-process: $TempScript $($invokeArgs -join ' ')"
 
@@ -187,8 +192,7 @@ try {
     Say "Upload complete."
     Log "=== ap.ps1 completed successfully ==="
 
-    # Reminder about async portal updates
-    # Autopilot import/processing may take time to reflect in the portal. [4](https://stackoverflow.com/questions/66107800/how-to-solve-aadsts700016-error-on-login-with-microsoft-account)
+    # Reminder about async portal updates (import/processing can take time) [1](https://stackoverflow.com/questions/66107800/how-to-solve-aadsts700016-error-on-login-with-microsoft-account)
 }
 catch {
     Say "Upload failed. Please check: C:\Windows\Temp\ap-bootstrap.log"
