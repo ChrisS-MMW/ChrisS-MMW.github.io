@@ -1,26 +1,24 @@
 <#
 ap.ps1 - OOBE bootstrapper for Get-WindowsAutoPilotInfo
-- Minimal on-screen output: shows only "Uploading HWHash..." and "Upload complete/failed"
-- Keeps GroupTag hidden from on-screen output
-- Pins Get-WindowsAutoPilotInfo to v3.6 (modern auth pivot: MSGraph -> MgGraph) [3](https://www.powershellgallery.com/packages/Get-WindowsAutoPilotInfo/3.8)
-- Patches the script safely (line-based insertion) to avoid "Assigned User" PropertyNotFoundStrict crashes
-- Runs child PowerShell IN THE SAME WINDOW (-NoNewWindow) and captures stdout/stderr to files
+- Shows on-screen progress (wait/sync messages) by NOT redirecting child output
+- Runs in the same console window (no new window)
+- Supports -Assign (toggle)
+- Pins modern auth version 3.6+ (3.6 switched MSGraph -> MgGraph) [2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+- Patches to avoid "Assigned User" PropertyNotFoundStrict crash
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------- CONFIG ----------------
-$PinnedVersion = '3.6'                 # Modern auth pivot: "Switch from MSGraph to MgGraph" [3](https://www.powershellgallery.com/packages/Get-WindowsAutoPilotInfo/3.8)
-$GroupTag      = 'AutoPilot-NonAdmin'  # Do NOT display on-screen
-$UseAssign     = $false                # Optional later
+$PinnedVersion = '3.6'                 # Modern auth pivot (MSGraph -> MgGraph) [2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+$GroupTag      = 'AutoPilot-NonAdmin'  # DO NOT display in wrapper output
+$UseAssign     = $true                 # <-- Set to $true to add -Assign back
 # ----------------------------------------
 
-$LogPath        = Join-Path $env:WINDIR 'Temp\ap-bootstrap.log'
-$TempScript     = Join-Path $env:WINDIR 'Temp\Get-WindowsAutoPilotInfo.patched.ps1'
-$ChildOut       = Join-Path $env:WINDIR 'Temp\Get-WindowsAutoPilotInfo.child.out.txt'
-$ChildErr       = Join-Path $env:WINDIR 'Temp\Get-WindowsAutoPilotInfo.child.err.txt'
-$PsExe          = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$LogPath    = Join-Path $env:WINDIR 'Temp\ap-bootstrap.log'
+$TempScript = Join-Path $env:WINDIR 'Temp\Get-WindowsAutoPilotInfo.patched.ps1'
+$PsExe      = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 function Log([string]$Message) {
     $ts = (Get-Date).ToString('s')
@@ -33,14 +31,13 @@ function Say([string]$Message) {
 
 try {
     Log "=== ap.ps1 starting ==="
-    Log "PinnedVersion=$PinnedVersion; GroupTag=$GroupTag; UseAssign=$UseAssign"
-    Say "Uploading HWHash..."
+    Log "PinnedVersion=$PinnedVersion; UseAssign=$UseAssign"
+    Say "Uploading HWHash... (progress will appear below)"
 
-    # Hint for Graph welcome suppression (harmless if unused)
+    # Best-effort suppression for Graph welcome (depends on module/script)
     $env:MG_NO_WELCOME = '1'
-    Log "Set MG_NO_WELCOME=1 (best-effort, depends on Graph module/script implementation)."
 
-    # TLS 1.2 helps on some older images
+    # TLS 1.2 for older images
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
     # Trust PSGallery to avoid prompts
@@ -64,7 +61,7 @@ try {
         Log "Warning: NuGet provider install/check failed: $($_.Exception.Message)"
     }
 
-    # Uninstall installed versions (PowerShellGet compatibility: no -AllVersions)
+    # Uninstall installed versions (PowerShellGet compatibility)
     try {
         $installed = Get-InstalledScript -Name Get-WindowsAutoPilotInfo -ErrorAction SilentlyContinue
         if ($installed) {
@@ -135,9 +132,6 @@ try {
     Log "Patched script successfully (inserted guard after line $($matchIndex+1))."
     # -------------------------------------------------------
 
-    # Clear previous child output files
-    Remove-Item $ChildOut, $ChildErr -Force -ErrorAction SilentlyContinue
-
     # Build args for child PowerShell
     $fileArgs = @(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
@@ -145,36 +139,22 @@ try {
         '-Online',
         '-GroupTag', $GroupTag
     )
-    if ($UseAssign) { $fileArgs += '-Assign' }
+    if ($UseAssign) { $fileArgs += '-Assign' }  # Wait for assignment to complete [1](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)
 
-    # IMPORTANT:
-    # -NoNewWindow keeps output in the same console window
-    # Redirect output/error to files so the console stays clean
-    Log "Starting child PowerShell (same window)."
-    $p = Start-Process -FilePath $PsExe `
-        -ArgumentList $fileArgs `
-        -NoNewWindow `
-        -Wait `
-        -PassThru `
-        -RedirectStandardOutput $ChildOut `
-        -RedirectStandardError  $ChildErr
+    Log "Executing child script (same window, visible progress)."
+
+    # IMPORTANT: No -RedirectStandardOutput/Error here, so you see the wait notifications.
+    # -NoNewWindow keeps it in the same console.
+    $p = Start-Process -FilePath $PsExe -ArgumentList $fileArgs -NoNewWindow -Wait -PassThru
 
     Log "Child exit code: $($p.ExitCode)"
-
-    if ($p.ExitCode -ne 0) {
-        # Keep screen output minimal
-        Say "Upload failed. Check log."
-        Log "Child stdout (first 2000 chars):"
-        if (Test-Path $ChildOut) { Log ((Get-Content $ChildOut -Raw).Substring(0, [Math]::Min(2000, (Get-Item $ChildOut).Length))) }
-        Log "Child stderr (first 2000 chars):"
-        if (Test-Path $ChildErr) { Log ((Get-Content $ChildErr -Raw).Substring(0, [Math]::Min(2000, (Get-Item $ChildErr).Length))) }
-        throw "Upload failed (exit code $($p.ExitCode))."
-    }
+    if ($p.ExitCode -ne 0) { throw "Upload failed (exit code $($p.ExitCode))." }
 
     Say "Upload complete."
     Log "=== ap.ps1 completed successfully ==="
 }
 catch {
+    Say "Upload failed. Please check the log: C:\Windows\Temp\ap-bootstrap.log"
     Log "ERROR: $($_.Exception.Message)"
     Log "STACK: $($_.ScriptStackTrace)"
     throw
