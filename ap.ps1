@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---- CONFIG ----
-$pinnedVersion = '3.5'
+$pinnedVersion = '3.6'
 $groupTag       = 'AutoPilot-NonAdmin'
 $log            = Join-Path $env:WINDIR 'Temp\ap-bootstrap.log'
 # ---------------
