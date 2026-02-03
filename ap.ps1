@@ -1,24 +1,36 @@
 <#
 ap.ps1 - OOBE bootstrapper for Get-WindowsAutoPilotInfo
-- Shows on-screen progress (wait/sync messages) by NOT redirecting child output
-- Runs in the same console window (no new window)
-- Supports -Assign (toggle)
-- Pins modern auth version 3.6+ (3.6 switched MSGraph -> MgGraph) [2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
-- Patches to avoid "Assigned User" PropertyNotFoundStrict crash
+
+Features:
+- Non-interactive NuGet + PSGallery trust (no Y prompts)
+- Pin modern-auth version (default 3.6: MSGraph -> MgGraph) [1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+- Patch to avoid "Assigned User" PropertyNotFoundStrict crash
+- Show progress/wait/sync output on screen
+- Hide GroupTag lines on screen (without breaking progress)
+- Optionally add -Assign back (wait for profile assignment) [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+
+Logs:
+- C:\Windows\Temp\ap-bootstrap.log
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------- CONFIG ----------------
-$PinnedVersion = '3.6'                 # Modern auth pivot (MSGraph -> MgGraph) [2](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
-$GroupTag      = 'AutoPilot-NonAdmin'  # DO NOT display in wrapper output
-$UseAssign     = $true                 # <-- Set to $true to add -Assign back
+$PinnedVersion = '3.6'                 # Modern auth pivot (MSGraph -> MgGraph) per release notes history [1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+$GroupTag      = 'AutoPilot-NonAdmin'  # Must be applied but not shown on-screen
+$UseAssign     = $true                 # Add -Assign back (wait for profile assignment completion) [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+
+# What to suppress from on-screen output
+$SuppressPatterns = @(
+    'GroupTag',                         # any line mentioning GroupTag
+    'Group Tag',                        # some scripts print it like this
+    [regex]::Escape($GroupTag)          # hide the value if printed
+)
 # ----------------------------------------
 
 $LogPath    = Join-Path $env:WINDIR 'Temp\ap-bootstrap.log'
 $TempScript = Join-Path $env:WINDIR 'Temp\Get-WindowsAutoPilotInfo.patched.ps1'
-$PsExe      = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 function Log([string]$Message) {
     $ts = (Get-Date).ToString('s')
@@ -29,18 +41,27 @@ function Say([string]$Message) {
     Write-Host $Message
 }
 
+function Should-SuppressLine([string]$Line) {
+    foreach ($p in $SuppressPatterns) {
+        if ($Line -match $p) { return $true }
+    }
+    return $false
+}
+
 try {
     Log "=== ap.ps1 starting ==="
-    Log "PinnedVersion=$PinnedVersion; UseAssign=$UseAssign"
-    Say "Uploading HWHash... (progress will appear below)"
+    Log "PinnedVersion=$PinnedVersion; UseAssign=$UseAssign; GroupTag=$GroupTag (hidden on-screen)"
 
-    # Best-effort suppression for Graph welcome (depends on module/script)
+    Say "Uploading HWHash... (import/sync/wait status will appear below)"
+
+    # Best-effort: suppress Graph welcome banner where applicable (depends on Graph module & script)
+    # Graph SDK uses Connect-MgGraph for auth flows. [3](https://www.powershellgallery.com/packages/Get-WindowsAutoPilotInfo/3.5/Content/Get-WindowsAutoPilotInfo.ps1)
     $env:MG_NO_WELCOME = '1'
 
-    # TLS 1.2 for older images
+    # TLS 1.2 helps on older images
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
-    # Trust PSGallery to avoid prompts
+    # --- Make PSGallery and NuGet installs non-interactive ---
     try {
         if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
             Register-PSRepository -Default -ErrorAction SilentlyContinue
@@ -51,24 +72,26 @@ try {
         Log "Warning: Could not set PSGallery trust policy: $($_.Exception.Message)"
     }
 
-    # Ensure NuGet provider
     try {
         if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
-            Log "Installing NuGet provider..."
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+            Log "Installing NuGet provider silently..."
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Confirm:$false -ErrorAction Stop | Out-Null
+        } else {
+            Log "NuGet provider already present."
         }
     } catch {
-        Log "Warning: NuGet provider install/check failed: $($_.Exception.Message)"
+        throw "Failed to install NuGet provider non-interactively: $($_.Exception.Message)"
     }
+    # --------------------------------------------------------
 
-    # Uninstall installed versions (PowerShellGet compatibility)
+    # Remove installed versions (PowerShellGet compatibility: avoid -AllVersions)
     try {
         $installed = Get-InstalledScript -Name Get-WindowsAutoPilotInfo -ErrorAction SilentlyContinue
         if ($installed) {
             foreach ($v in @($installed.Version | Sort-Object -Unique)) {
                 try {
                     Log "Uninstalling Get-WindowsAutoPilotInfo v$v"
-                    Uninstall-Script -Name Get-WindowsAutoPilotInfo -RequiredVersion $v -Force -ErrorAction Stop
+                    Uninstall-Script -Name Get-WindowsAutoPilotInfo -RequiredVersion $v -Force -Confirm:$false -ErrorAction Stop
                 } catch {
                     Log "Warning: could not uninstall v$v : $($_.Exception.Message)"
                 }
@@ -78,9 +101,9 @@ try {
         Log "Warning: Uninstall step failed: $($_.Exception.Message)"
     }
 
-    # Install pinned version
+    # Install pinned version (modern auth)
     Log "Installing Get-WindowsAutoPilotInfo v$PinnedVersion..."
-    Install-Script -Name Get-WindowsAutoPilotInfo -RequiredVersion $PinnedVersion -Force -ErrorAction Stop
+    Install-Script -Name Get-WindowsAutoPilotInfo -RequiredVersion $PinnedVersion -Force -Confirm:$false -ErrorAction Stop
 
     # Locate installed script and copy to temp
     $installedCmd = Get-Command Get-WindowsAutoPilotInfo.ps1 -ErrorAction Stop
@@ -91,29 +114,20 @@ try {
     Copy-Item -Path $src -Destination $TempScript -Force
     Log "Copied to temp: $TempScript"
 
-    # ---------- SAFE PATCH (line-based insertion) ----------
+    # ---------------- PATCH 1: Fix "Assigned User" missing property crash ----------------
+    # Insert a guard immediately after the first "$computers | ForEach-Object {" line.
     $lines = Get-Content -Path $TempScript -Encoding UTF8
 
     $matchIndex = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match '^\s*\$computers\s*\|\s*ForEach-Object\s*\{\s*$') {
-            $matchIndex = $i
-            break
-        }
+        if ($lines[$i] -match '^\s*\$computers\s*\|\s*ForEach-Object\s*\{\s*$') { $matchIndex = $i; break }
     }
     if ($matchIndex -lt 0) {
         for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -like '*$computers*ForEach-Object*{*') {
-                $matchIndex = $i
-                break
-            }
+            if ($lines[$i] -like '*$computers*ForEach-Object*{*') { $matchIndex = $i; break }
         }
     }
-
-    if ($matchIndex -lt 0) {
-        Log "ERROR: Patch point not found in script."
-        throw "Patch point not found."
-    }
+    if ($matchIndex -lt 0) { throw "Patch point not found for `$computers | ForEach-Object {`" }
 
     $indent = ($lines[$matchIndex] -replace '(\S.*)$','')
     $patchLines = @(
@@ -129,33 +143,38 @@ try {
     if ($matchIndex + 1 -lt $lines.Count) { $newLines += $lines[($matchIndex+1)..($lines.Count-1)] }
 
     Set-Content -Path $TempScript -Value $newLines -Encoding UTF8 -Force
-    Log "Patched script successfully (inserted guard after line $($matchIndex+1))."
-    # -------------------------------------------------------
+    Log "Patched script (Assigned User guard) inserted after line $($matchIndex+1)."
+    # -----------------------------------------------------------------------------------
 
-    # Build args for child PowerShell
-    $fileArgs = @(
-        '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
-        '-File', $TempScript,
-        '-Online',
-        '-GroupTag', $GroupTag
-    )
-    if ($UseAssign) { $fileArgs += '-Assign' }  # Wait for assignment to complete [1](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)
+    # ---------------- PATCH 2: Hide GroupTag lines without killing progress -------------
+    # Best-effort: replace any Write-Host lines that contain GroupTag or the tag value.
+    # This keeps sync/wait output but removes the sensitive lines.
+    $lines2 = Get-Content -Path $TempScript -Encoding UTF8
+    $replacedCount = 0
 
-    Log "Executing child script (same window, visible progress)."
+    for ($i = 0; $i -lt $lines2.Count; $i++) {
+        $line = $lines2[$i]
 
-    # IMPORTANT: No -RedirectStandardOutput/Error here, so you see the wait notifications.
-    # -NoNewWindow keeps it in the same console.
-    $p = Start-Process -FilePath $PsExe -ArgumentList $fileArgs -NoNewWindow -Wait -PassThru
+        # Only target lines that print to host
+        if ($line -match '^\s*Write-Host' -and (Should-SuppressLine $line)) {
+            if ($replacedCount -eq 0) {
+                $lines2[$i] = ($line -replace 'Write-Host.*', 'Write-Host "Uploading HWHash..."')
+            } else {
+                $lines2[$i] = ('# suppressed by ap.ps1')
+            }
+            $replacedCount++
+        }
+    }
 
-    Log "Child exit code: $($p.ExitCode)"
-    if ($p.ExitCode -ne 0) { throw "Upload failed (exit code $($p.ExitCode))." }
+    if ($replacedCount -gt 0) {
+        Set-Content -Path $TempScript -Value $lines2 -Encoding UTF8 -Force
+        Log "Suppressed $replacedCount host output lines that referenced GroupTag."
+    } else {
+        Log "No GroupTag host-output lines detected for suppression (script may not print it)."
+    }
+    # -----------------------------------------------------------------------------------
 
-    Say "Upload complete."
-    Log "=== ap.ps1 completed successfully ==="
-}
-catch {
-    Say "Upload failed. Please check the log: C:\Windows\Temp\ap-bootstrap.log"
-    Log "ERROR: $($_.Exception.Message)"
-    Log "STACK: $($_.ScriptStackTrace)"
-    throw
-}
+    # Build invocation (in-process, so progress appears on screen)
+    $invokeArgs = @('-Online', '-GroupTag', $GroupTag)
+    if ($UseAssign) { $invokeArgs += '-Assign' }  # wait for assignment [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+
