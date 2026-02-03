@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 # ---------------- CONFIG ----------------
 $PinnedVersion = '3.6'                 # Modern auth pivot (MSGraph -> MgGraph) per release notes history [1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 $GroupTag      = 'AutoPilot-NonAdmin'  # Must be applied but not shown on-screen
-$UseAssign     = $true                 # Add -Assign back (wait for profile assignment completion) [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
+$UseAssign     = $false                 # Add -Assign back (wait for profile assignment completion) [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 
 # What to suppress from on-screen output
 $SuppressPatterns = @(
