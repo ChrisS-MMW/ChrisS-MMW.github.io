@@ -41,7 +41,7 @@ try {
     Log "Installed Get-WindowsAutoPilotInfo version: $($installed.Version) at $($installed.InstalledLocation)"
 
     # Run with your required parameters
-    Log "Running: Get-WindowsAutoPilotInfo.ps1 -Online -Assign -GroupTag '$GroupTag'"
+    Log "Running: Get-WindowsAutoPilotInfo.ps1 -Online -GroupTag '$GroupTag'"
     # Get-WindowsAutoPilotInfo.ps1 -Online -Assign -GroupTag $GroupTag
     Get-WindowsAutoPilotInfo.ps1 -Online -GroupTag $GroupTag
     Log "=== Autopilot bootstrap completed successfully ==="
