@@ -178,3 +178,21 @@ try {
     $invokeArgs = @('-Online', '-GroupTag', $GroupTag)
     if ($UseAssign) { $invokeArgs += '-Assign' }  # wait for assignment [2](https://www.prajwaldesai.com/autopilot-profile-status-shows-not-assigned/)[1](https://learn.microsoft.com/en-us/answers/questions/908202/error-running-%28get-windowsautopilotinfo-ps1%29)
 
+    Log "Executing patched script in-process: $TempScript $($invokeArgs -join ' ')"
+
+    # IMPORTANT:
+    # Running in-process preserves host output (Write-Host), so you see wait/sync messages.
+    & $TempScript @invokeArgs
+
+    Say "Upload complete."
+    Log "=== ap.ps1 completed successfully ==="
+
+    # Reminder about async portal updates
+    # Autopilot import/processing may take time to reflect in the portal. [4](https://stackoverflow.com/questions/66107800/how-to-solve-aadsts700016-error-on-login-with-microsoft-account)
+}
+catch {
+    Say "Upload failed. Please check: C:\Windows\Temp\ap-bootstrap.log"
+    Log "ERROR: $($_.Exception.Message)"
+    Log "STACK: $($_.ScriptStackTrace)"
+    throw
+}
