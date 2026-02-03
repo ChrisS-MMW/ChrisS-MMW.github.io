@@ -42,8 +42,8 @@ try {
 
     # Run with your required parameters
     Log "Running: Get-WindowsAutoPilotInfo.ps1 -Online -Assign -GroupTag '$GroupTag'"
-    Get-WindowsAutoPilotInfo.ps1 -Online -Assign -GroupTag $GroupTag
-
+    # Get-WindowsAutoPilotInfo.ps1 -Online -Assign -GroupTag $GroupTag
+    Get-WindowsAutoPilotInfo.ps1 -Online -GroupTag $GroupTag
     Log "=== Autopilot bootstrap completed successfully ==="
 }
 catch {
