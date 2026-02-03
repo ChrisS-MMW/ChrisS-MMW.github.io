@@ -1,21 +1,24 @@
 <#
 ap.ps1 - OOBE bootstrapper for Get-WindowsAutoPilotInfo
-- Pins a modern-auth version (3.6+ uses MgGraph) to avoid legacy auth issues like AADSTS700016. [1](https://support.nhs.net/2024/03/information-microsoft-detected-a-microsoft-intune-powershell-script-issue-in-your-environment/)[2](https://github.com/LegendEvent/Get-WindowsAutoPilotInfo/blob/main/Get-WindowsAutoPilotInfo.ps1)
+
+- Pins to a modern-auth version (3.6+ uses MgGraph) to avoid legacy auth issues seen with older auth flows. [1](https://support.nhs.net/2024/03/information-microsoft-detected-a-microsoft-intune-powershell-script-issue-in-your-environment/)[2](https://github.com/LegendEvent/Get-WindowsAutoPilotInfo/blob/main/Get-WindowsAutoPilotInfo.ps1)
 - Patches the script safely (line-based insertion) to prevent "Assigned User" PropertyNotFoundStrict crashes.
-- Runs -Online with your GroupTag (optional -Assign toggle).
+- Executes via powershell.exe -File to ensure clean parameter binding (fixes -GroupTag binding error).
+
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------- CONFIG ----------------
-$PinnedVersion = '3.6'                 # Modern auth pivot (MgGraph). Change to '3.8' if desired. [1](https://support.nhs.net/2024/03/information-microsoft-detected-a-microsoft-intune-powershell-script-issue-in-your-environment/)
+$PinnedVersion = '3.6'                 # Modern auth pivot (MgGraph). [1](https://support.nhs.net/2024/03/information-microsoft-detected-a-microsoft-intune-powershell-script-issue-in-your-environment/)
 $GroupTag      = 'AutoPilot-NonAdmin'
-$UseAssign     = $false                # Start false; flip true later if you want -Assign
-
-$LogPath       = Join-Path $env:WINDIR 'Temp\ap-bootstrap.log'
-$TempScript    = Join-Path $env:WINDIR 'Temp\Get-WindowsAutoPilotInfo.patched.ps1'
+$UseAssign     = $false                # Flip to $true later if you want -Assign
 # ----------------------------------------
+
+$LogPath    = Join-Path $env:WINDIR 'Temp\ap-bootstrap.log'
+$TempScript = Join-Path $env:WINDIR 'Temp\Get-WindowsAutoPilotInfo.patched.ps1'
+$PsExe      = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 function Log([string]$Message) {
     $ts = (Get-Date).ToString('s')
@@ -26,10 +29,10 @@ try {
     Log "=== ap.ps1 starting ==="
     Log "PinnedVersion=$PinnedVersion; GroupTag=$GroupTag; UseAssign=$UseAssign"
 
-    # Helpful on older builds
+    # TLS 1.2 helps on some older images
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
-    # Trust PSGallery to avoid prompts in OOBE
+    # Trust PSGallery to avoid prompts
     try {
         if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
             Register-PSRepository -Default -ErrorAction SilentlyContinue
@@ -39,7 +42,7 @@ try {
         Log "Warning: Could not set PSGallery trust policy: $($_.Exception.Message)"
     }
 
-    # Ensure NuGet provider (Install-Script may require it)
+    # Ensure NuGet provider
     try {
         if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
             Log "Installing NuGet provider..."
@@ -49,7 +52,7 @@ try {
         Log "Warning: NuGet provider install/check failed: $($_.Exception.Message)"
     }
 
-    # Uninstall any installed versions (PowerShellGet compatibility: no -AllVersions)
+    # Uninstall installed versions (PowerShellGet compatible - no -AllVersions)
     try {
         $installed = Get-InstalledScript -Name Get-WindowsAutoPilotInfo -ErrorAction SilentlyContinue
         if ($installed) {
@@ -61,29 +64,25 @@ try {
                     Log "Warning: could not uninstall v$v : $($_.Exception.Message)"
                 }
             }
-        } else {
-            Log "No installed Get-WindowsAutoPilotInfo versions found (or cannot enumerate)."
         }
     } catch {
-        Log "Warning: Get-InstalledScript/Uninstall-Script step failed: $($_.Exception.Message)"
+        Log "Warning: Uninstall step failed: $($_.Exception.Message)"
     }
 
     # Install pinned version
     Log "Installing Get-WindowsAutoPilotInfo v$PinnedVersion..."
     Install-Script -Name Get-WindowsAutoPilotInfo -RequiredVersion $PinnedVersion -Force -ErrorAction Stop
 
-    # Locate installed script
+    # Locate installed script and copy to temp
     $installedCmd = Get-Command Get-WindowsAutoPilotInfo.ps1 -ErrorAction Stop
     $src = $installedCmd.Source
     Log "Installed script located at: $src"
 
-    # Copy to temp for patching (always start clean)
     Remove-Item $TempScript -Force -ErrorAction SilentlyContinue
     Copy-Item -Path $src -Destination $TempScript -Force
     Log "Copied to temp: $TempScript"
 
     # ---------- SAFE PATCH (line-based insertion) ----------
-    # Insert guard immediately after the first line containing "$computers | ForEach-Object {"
     $lines = Get-Content -Path $TempScript -Encoding UTF8
 
     $matchIndex = -1
@@ -93,9 +92,7 @@ try {
             break
         }
     }
-
     if ($matchIndex -lt 0) {
-        # Fallback: match if the token appears on the line (some versions have extra spacing)
         for ($i = 0; $i -lt $lines.Count; $i++) {
             if ($lines[$i] -like '*$computers*ForEach-Object*{*') {
                 $matchIndex = $i
@@ -105,20 +102,18 @@ try {
     }
 
     if ($matchIndex -lt 0) {
-        Log "ERROR: Patch point not found in script. Not running unpatched (would likely fail)."
-        Log "Tip: open $TempScript and search for '`$computers | ForEach-Object {' then tell me what you see."
+        Log "ERROR: Patch point not found in script."
         throw "Patch point not found."
     }
 
-    $indent = ($lines[$matchIndex] -replace '(\S.*)$','')  # keep leading whitespace
+    $indent = ($lines[$matchIndex] -replace '(\S.*)$','')
     $patchLines = @(
-        "$indent    # PATCH: ensure missing 'Assigned User' property does not crash under strict property access",
+        "$indent    # PATCH: ensure missing 'Assigned User' property does not crash",
         "$indent    if (-not `$_.PSObject.Properties.Match('Assigned User')) {",
         "$indent        `$null = `$_.PSObject.Properties.Add([System.Management.Automation.PSNoteProperty]::new('Assigned User', `$null))",
         "$indent    }"
     )
 
-    # Insert patch lines after the matchIndex line
     $newLines = @()
     $newLines += $lines[0..$matchIndex]
     $newLines += $patchLines
@@ -128,12 +123,17 @@ try {
     Log "Patched script successfully (inserted guard after line $($matchIndex+1))."
     # -------------------------------------------------------
 
-    # Build arguments for execution
-    $args = @('-Online', '-GroupTag', $GroupTag)
-    if ($UseAssign) { $args += '-Assign' }
+    # Build a robust argument list for powershell.exe -File
+    $fileArgs = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File', $TempScript, '-Online', '-GroupTag', $GroupTag)
+    if ($UseAssign) { $fileArgs += '-Assign' }
 
-    Log "Executing: $TempScript $($args -join ' ')"
-    & $TempScript @args
+    Log "Executing via powershell.exe: $PsExe $($fileArgs -join ' ')"
+    $p = Start-Process -FilePath $PsExe -ArgumentList $fileArgs -Wait -PassThru
+
+    Log "Child PowerShell exit code: $($p.ExitCode)"
+    if ($p.ExitCode -ne 0) {
+        throw "Get-WindowsAutoPilotInfo process failed with exit code $($p.ExitCode). Check $LogPath and any script output above."
+    }
 
     Log "=== ap.ps1 completed successfully ==="
 }
