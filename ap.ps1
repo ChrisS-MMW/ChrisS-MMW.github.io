@@ -26,6 +26,9 @@ try {
 
     if ($UseAssign) {
         Say "Deployment Profile assignment may take up to 30 minutes - please be patient."
+        Say "If you are prompted to install any NuGet packages please accept."
+        Say "DONT Forget to PIM elevate to Device Local Admin before Signing In."
+        Say "When prompted to Sign In, Please choose Worplace or school account."
         # Autopilot import/processing can take time to reflect. [4](https://stackoverflow.com/questions/66107800/how-to-solve-aadsts700016-error-on-login-with-microsoft-account)
     }
 
